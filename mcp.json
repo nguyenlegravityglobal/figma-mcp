@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gravity-global-figma-mcp": {
+      "command": "node",
+      "args": ["index.js"],
+      "env": {
+        "FIGMA_API_KEY": ""
+      }
+    }
+  }
+} 
