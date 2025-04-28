@@ -119,6 +119,8 @@ export function transformFigmaJson(rawData) {
       const bbox = rawNode.absoluteBoundingBox;
       layoutStyle.width = `${bbox.width}px`;
       layoutStyle.height = `${bbox.height}px`;
+      
+      // Remove position styles - we'll keep the raw position data in the node
     }
 
     // Process border radius
@@ -162,6 +164,52 @@ export function transformFigmaJson(rawData) {
       return `${rawNode.cornerSmoothing}px`;
     }
     return null;
+  }
+
+  function getPositionData(rawNode) {
+    // Extract position-related data from a node
+    const positionData = {};
+    
+    // Extract absoluteBoundingBox data
+    if (rawNode.absoluteBoundingBox) {
+      const bbox = rawNode.absoluteBoundingBox;
+      positionData.x = bbox.x;
+      positionData.y = bbox.y;
+      positionData.width = bbox.width;
+      positionData.height = bbox.height;
+    }
+    
+    // Extract relativeTransform data if available
+    if (rawNode.relativeTransform) {
+      positionData.relativeTransform = rawNode.relativeTransform;
+    }
+    
+    // Extract rotation if available
+    if (rawNode.rotation !== undefined) {
+      positionData.rotation = rawNode.rotation;
+    }
+    
+    // Extract constraints if available
+    if (rawNode.constraints) {
+      positionData.constraints = rawNode.constraints;
+    }
+    
+    // Extract layoutAlign if available
+    if (rawNode.layoutAlign) {
+      positionData.layoutAlign = rawNode.layoutAlign;
+    }
+    
+    // Extract layoutGrow if available
+    if (rawNode.layoutGrow !== undefined) {
+      positionData.layoutGrow = rawNode.layoutGrow;
+    }
+    
+    // Extract layoutPositioning if available
+    if (rawNode.layoutPositioning) {
+      positionData.layoutPositioning = rawNode.layoutPositioning;
+    }
+    
+    return positionData;
   }
 
   function getTextStyleId(rawNode, styles) {
@@ -250,6 +298,10 @@ export function transformFigmaJson(rawData) {
       visible: rawNode.visible !== false,
     };
 
+    // Add position information
+    const positionData = getPositionData(rawNode);
+    Object.assign(node, positionData);
+
     // Process styles
     if (rawNode.fills) {
       const fillStyleId = getFillStyleId(rawNode.fills, styles);
@@ -335,8 +387,6 @@ export function transformFigmaJson(rawData) {
   const styles = {};
 
   // Process the raw data based on Figma API response structure
-  console.log("Processing Figma data structure...");
-
   // Handle both direct file content and nodes object
   let document = null;
   let documentData = null;
@@ -354,11 +404,11 @@ export function transformFigmaJson(rawData) {
     }
 
     result.styles = styles;
-    console.log(
-      `Transformed Figma nodes data with ${
-        Object.keys(styles).length
-      } extracted styles`
-    );
+    // console.log(
+    //   `Transformed Figma nodes data with ${
+    //     Object.keys(styles).length
+    //   } extracted styles`
+    // );
     return result;
   }
   // Check if this is a direct file response

@@ -8,6 +8,7 @@ import { transformFigmaJson } from "./utils/transformFigmaJson.js";
 import { findColorItems } from "./utils/findColorItems.js";
 import { extractTypoItems } from "./utils/extract_figma_data.js";
 import dotenv from "dotenv";
+import { Buffer } from "buffer";
 dotenv.config();
 
 
@@ -59,7 +60,7 @@ function extractFigmaInfo(url) {
   return result;
 }
 
-async function fetchFigmaDesign(figmaUrl, saveToFile = false, tokent=false) {
+async function fetchFigmaDesign(figmaUrl) {
   // Extract file ID and node ID from URL
   const { fileId, nodeId } = extractFigmaInfo(figmaUrl);
   
@@ -67,7 +68,7 @@ async function fetchFigmaDesign(figmaUrl, saveToFile = false, tokent=false) {
     throw new Error("Could not extract a valid Figma file ID from the URL.");
   }
   
-  // Construct the API URL
+  // Construct the API URL for design data
   const apiUrl = nodeId
     ? `https://api.figma.com/v1/files/${fileId}/nodes?ids=${nodeId}`
     : `https://api.figma.com/v1/files/${fileId}`;
@@ -86,44 +87,42 @@ async function fetchFigmaDesign(figmaUrl, saveToFile = false, tokent=false) {
   }
 
   const data = await response.json();
-  
-  if (saveToFile) {
-    // Create figma_data directory if it doesn't exist
-    if (!fs.existsSync('figma_data')) {
-      fs.mkdirSync('figma_data', { recursive: true });
-      console.log("Created directory: figma_data");
-    }
-    
-    // Save original data
-    const fileName = `figma_data/figma_data.json`;
-    fs.writeFileSync(fileName, JSON.stringify(data, null, 2));
-    console.log(`Figma data saved to: ${fileName}`);
-    
-    // Process and save transformed data
-    try {
-      const transformedData = transformFigmaJson(data);
-      fs.writeFileSync('figma_data/figma_data-optimized.json', JSON.stringify(transformedData, null, 2));
-      
-      // Log transformation details
-      const originalSize = JSON.stringify(data).length;
-      const transformedSize = JSON.stringify(transformedData).length;
-      const percentReduction = ((originalSize - transformedSize) / originalSize * 100).toFixed(2);
 
-      // const colorTokens = extractOptimizedColors(transformedData);
-      // const typoTokens = extractOptimizedTypography(transformedData);
-      // console.log(typoTokens);
-      // fs.writeFileSync('figma_data/figma_tokens.json', JSON.stringify({ colors: colorTokens, typography: typoTokens }, null, 2));
-    } catch (error) {
-      console.error(`Error transforming Figma data: ${error.message}`);
-      console.error(error.stack);
+  // Get the design image URL
+  const imageApiUrl = nodeId
+    ? `https://api.figma.com/v1/images/${fileId}?ids=${nodeId.replace("-", ":")}&format=png`
+    : `https://api.figma.com/v1/images/${fileId}?format=png`;
+
+  const imageResponse = await fetch(imageApiUrl, {
+    headers: {
+      'X-Figma-Token': figmaToken
     }
+  });
+
+  if (!imageResponse.ok) {
+    throw new Error(`Figma API error when fetching image: ${imageResponse.statusText}`);
   }
-  if (tokent) {
-    const colorItems = findColorItems(data);
-    const typoItems = extractTypoItems(data);
-    return { colors: colorItems, typography: typoItems };
+
+  const imageData = await imageResponse.json();
+  const imageKey = nodeId ? nodeId.replace("-", ":") : fileId;
+  const imageUrl = imageData.images[imageKey];
+
+  // Download the image and convert to base64
+  let base64Image = null;
+  let mimeType = "image/png";
+  if (imageUrl) {
+    const imgRes = await fetch(imageUrl);
+    if (!imgRes.ok) throw new Error("Failed to download image from Figma CDN");
+    const arrayBuffer = await imgRes.arrayBuffer();
+    base64Image = Buffer.from(arrayBuffer).toString("base64");
+    // Optionally, you could check Content-Type from imgRes.headers.get('content-type')
   }
-  return transformFigmaJson(data);
+  console.log(imageUrl);
+  return {
+    design: transformFigmaJson(data),
+    image: base64Image,
+    mimeType
+  };
 }
 
 
@@ -131,8 +130,6 @@ async function fetchFigmaDesign(figmaUrl, saveToFile = false, tokent=false) {
 server.tool("figmaDesign",
   { 
     figmaUrl: z.string().describe("Figma URL or file ID"),
-    fullJson: z.boolean().optional().describe("If true, returns full uncompressed JSON data"),
-    cleanData: z.boolean().optional().describe("If true, removes unnecessary properties for HTML/CSS rendering")
   },
   async (params) => {
     try {
@@ -145,15 +142,24 @@ server.tool("figmaDesign",
         };
       }
 
-      // Fetch the Figma design data
-      const data = await fetchFigmaDesign(params.figmaUrl);
+      // Fetch the Figma design data and image
+      const result = await fetchFigmaDesign(params.figmaUrl);
       
-      return {
-        content: [{ 
+      const content = [
+        { 
           type: "text", 
-          text: JSON.stringify(data, null, 2)
-        }]
-      };
+          text: JSON.stringify(result.design)
+        }
+      ];
+      if (result.image) {
+        content.push({
+          type: "image",
+          data: result.image,
+          mimeType: result.mimeType
+        });
+      }
+
+      return { content };
     } catch (error) {
       return {
         content: [
@@ -170,4 +176,4 @@ server.tool("figmaDesign",
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 await server.connect(transport);
-// await fetchFigmaDesign("https://www.figma.com/design/Xg0BslXQN1tNB1djfbAySf/Allied-Fire-Protection-Website-(Copy)?node-id=4993-1905&t=saI0jT1zN8qcacwK-4", true);
+await fetchFigmaDesign("https://www.figma.com/design/Xg0BslXQN1tNB1djfbAySf/Allied-Fire-Protection-Website-(Copy)?node-id=4993-1905&t=saI0jT1zN8qcacwK-4");
