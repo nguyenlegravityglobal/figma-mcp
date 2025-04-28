@@ -176,4 +176,4 @@ server.tool("figmaDesign",
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 await server.connect(transport);
-await fetchFigmaDesign("https://www.figma.com/design/Xg0BslXQN1tNB1djfbAySf/Allied-Fire-Protection-Website-(Copy)?node-id=4993-1905&t=saI0jT1zN8qcacwK-4");
+// await fetchFigmaDesign("https://www.figma.com/design/Xg0BslXQN1tNB1djfbAySf/Allied-Fire-Protection-Website-(Copy)?node-id=4993-1905&t=saI0jT1zN8qcacwK-4");
