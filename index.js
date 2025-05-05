@@ -106,7 +106,7 @@ async function fetchFigmaDesign(figmaUrl) {
   const imageData = await imageResponse.json();
   const imageKey = nodeId ? nodeId.replace("-", ":") : fileId;
   const imageUrl = imageData.images[imageKey];
-
+  console.log(imageUrl);
   // Download the image and convert to base64
   let base64Image = null;
   let mimeType = "image/png";
@@ -117,7 +117,6 @@ async function fetchFigmaDesign(figmaUrl) {
     base64Image = Buffer.from(arrayBuffer).toString("base64");
     // Optionally, you could check Content-Type from imgRes.headers.get('content-type')
   }
-  console.log(imageUrl);
   return {
     design: transformFigmaJson(data),
     image: base64Image,
@@ -176,4 +175,4 @@ server.tool("figmaDesign",
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 await server.connect(transport);
-// await fetchFigmaDesign("https://www.figma.com/design/Xg0BslXQN1tNB1djfbAySf/Allied-Fire-Protection-Website-(Copy)?node-id=4993-1905&t=saI0jT1zN8qcacwK-4");
+// await fetchFigmaDesign("https://www.figma.com/design/dYYTLSIATnassRFckYWbpN/NPKI-Website?node-id=4362-10168&t=CKE6uIFszEQngzLt-4"); 
