@@ -2,15 +2,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import fetch from "node-fetch";
-// import fs from "fs";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { transformFigmaJson } from "./utils/transformFigmaJson.js";
-// import { extractColorAndTypoItems } from "./utils/extract_figma_data.js";
 import { findColorItems } from "./utils/findColorItems.js";
 import { extractTypoItems } from "./utils/extract_figma_data.js";
 import dotenv from "dotenv";
 import { Buffer } from "buffer";
 dotenv.config();
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Create figma-downloader directory if it doesn't exist
+const downloadDir = path.join(__dirname, 'figma-downloader');
+if (!fs.existsSync(downloadDir)) {
+    fs.mkdirSync(downloadDir);
+}
 
 console.log("FIGMA_API_KEY from env:", process.env.FIGMA_API_KEY);
 // Read Figma token from environment variable
@@ -23,10 +32,8 @@ const server = new McpServer({
   version: "1.0.0"
 });
 
-
-
 // Helper function to extract file ID and node ID from Figma URL
-function extractFigmaInfo(url) {
+export function extractFigmaInfo(url) {
   console.log("Processing URL:", url);
   const result = { fileId: "", nodeId: "" };
   
@@ -60,7 +67,7 @@ function extractFigmaInfo(url) {
   return result;
 }
 
-async function fetchFigmaDesign(figmaUrl) {
+export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "desktop") {
   // Extract file ID and node ID from URL
   const { fileId, nodeId } = extractFigmaInfo(figmaUrl);
   
@@ -87,6 +94,7 @@ async function fetchFigmaDesign(figmaUrl) {
   }
 
   const data = await response.json();
+  const transformedData = transformFigmaJson(data);
 
   // Get the design image URL
   const imageApiUrl = nodeId
@@ -106,7 +114,30 @@ async function fetchFigmaDesign(figmaUrl) {
   const imageData = await imageResponse.json();
   const imageKey = nodeId ? nodeId.replace("-", ":") : fileId;
   const imageUrl = imageData.images[imageKey];
-  console.log(imageUrl);
+
+  if (download) {
+    // Save JSON file
+    const jsonPath = path.join(downloadDir, `${viewport}-design.json`);
+    fs.writeFileSync(jsonPath, JSON.stringify(data, null));
+
+    // Download and save image
+    if (imageUrl) {
+      const imgRes = await fetch(imageUrl);
+      if (!imgRes.ok) throw new Error("Failed to download image from Figma CDN");
+      const arrayBuffer = await imgRes.arrayBuffer();
+      const imagePath = path.join(downloadDir, `${viewport}-image.png`);
+      fs.writeFileSync(imagePath, Buffer.from(arrayBuffer));
+    }
+
+    return {
+      success: true,
+      jsonPath,
+      imagePath: imageUrl ? path.join(downloadDir, `${viewport}-image.png`) : null,
+      image: imageUrl ? await fetch(imageUrl).then(res => res.arrayBuffer()).then(buffer => Buffer.from(buffer).toString('base64')) : null,
+      design: transformedData
+    };
+  }
+
   // Download the image and convert to base64
   let base64Image = null;
   let mimeType = "image/png";
@@ -115,15 +146,14 @@ async function fetchFigmaDesign(figmaUrl) {
     if (!imgRes.ok) throw new Error("Failed to download image from Figma CDN");
     const arrayBuffer = await imgRes.arrayBuffer();
     base64Image = Buffer.from(arrayBuffer).toString("base64");
-    // Optionally, you could check Content-Type from imgRes.headers.get('content-type')
   }
+
   return {
-    design: transformFigmaJson(data),
+    design: transformedData,
     image: base64Image,
     mimeType
   };
 }
-
 
 // Add Figma JSON design fetch tool
 server.tool("figmaDesign",

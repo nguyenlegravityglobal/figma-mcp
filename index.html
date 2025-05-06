@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Figma Design Downloader</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .loading {
+            display: none;
+            margin-top: 20px;
+            text-align: center;
+        }
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
+        .preview-container {
+            margin-top: 20px;
+            display: flex;
+            gap: 20px;
+        }
+        .preview {
+            flex: 1;
+            text-align: center;
+        }
+        .preview img {
+            max-width: 100%;
+            max-height: 300px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .preview h3 {
+            margin-top: 10px;
+        }
+        .download-all {
+            margin-top: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Figma Design Downloader</h1>
+        <form id="figmaForm">
+            <div class="form-group">
+                <label for="desktopUrl">Desktop Figma URL:</label>
+                <input type="text" id="desktopUrl" name="desktopUrl" required>
+            </div>
+            <div class="form-group">
+                <label for="mobileUrl">Mobile Figma URL:</label>
+                <input type="text" id="mobileUrl" name="mobileUrl" required>
+            </div>
+            <button type="submit">Preview Designs</button>
+        </form>
+        <div id="loading" class="loading">
+            Processing... Please wait
+        </div>
+        <div id="error" class="error"></div>
+        
+        <div class="preview-container">
+            <div class="preview">
+                <h3>Desktop Design</h3>
+                <img id="desktopPreview" style="display: none;">
+            </div>
+            <div class="preview">
+                <h3>Mobile Design</h3>
+                <img id="mobilePreview" style="display: none;">
+            </div>
+        </div>
+        
+        <div class="download-all">
+            <button id="downloadAll" style="display: none;">Download All Files</button>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('figmaForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const desktopUrl = document.getElementById('desktopUrl').value;
+            const mobileUrl = document.getElementById('mobileUrl').value;
+            const loading = document.getElementById('loading');
+            const error = document.getElementById('error');
+            const desktopPreview = document.getElementById('desktopPreview');
+            const mobilePreview = document.getElementById('mobilePreview');
+            const downloadAllBtn = document.getElementById('downloadAll');
+            
+            loading.style.display = 'block';
+            error.textContent = '';
+            desktopPreview.style.display = 'none';
+            mobilePreview.style.display = 'none';
+            downloadAllBtn.style.display = 'none';
+            
+            try {
+                // Send both URLs in a single request
+                const response = await fetch('/figmaDesign', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ desktopUrl, mobileUrl })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to fetch designs');
+                }
+                
+                const data = await response.json();
+                
+                // Display desktop preview
+                if (data.desktop.image) {
+                    desktopPreview.src = `data:image/png;base64,${data.desktop.image}`;
+                    desktopPreview.style.display = 'block';
+                }
+                
+                // Display mobile preview
+                if (data.mobile.image) {
+                    mobilePreview.src = `data:image/png;base64,${data.mobile.image}`;
+                    mobilePreview.style.display = 'block';
+                }
+                
+                downloadAllBtn.style.display = 'block';
+                
+            } catch (err) {
+                error.textContent = `Error: ${err.message}`;
+            } finally {
+                loading.style.display = 'none';
+            }
+        });
+
+        document.getElementById('downloadAll').addEventListener('click', () => {
+            window.location.href = '/download-figma-files';
+        });
+    </script>
+</body>
+</html> 

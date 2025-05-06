@@ -155,6 +155,16 @@ export function transformFigmaJson(rawData) {
     if (rawNode.cornerRadius !== undefined) {
       return `${rawNode.cornerRadius}px`;
     }
+    
+    // Handle rectangleCornerRadii
+    if (rawNode.rectangleCornerRadii) {
+      const [topLeft, topRight, bottomRight, bottomLeft] = rawNode.rectangleCornerRadii;
+      if (topLeft === topRight && topRight === bottomRight && bottomRight === bottomLeft) {
+        return `${topLeft}px`;
+      }
+      return `${topLeft}px ${topRight}px ${bottomRight}px ${bottomLeft}px`;
+    }
+    
     return null;
   }
 
