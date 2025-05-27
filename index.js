@@ -180,13 +180,13 @@ server.tool("figmaDesign",
           text: JSON.stringify(result.design)
         }
       ];
-      if (result.image) {
-        content.push({
-          type: "image",
-          data: result.image,
-          mimeType: result.mimeType
-        });
-      }
+      // if (result.image) {
+      //   content.push({
+      //     type: "image",
+      //     data: result.image,
+      //     mimeType: result.mimeType
+      //   });
+      // }
 
       return { content };
     } catch (error) {
