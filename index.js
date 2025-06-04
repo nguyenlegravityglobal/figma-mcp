@@ -6,10 +6,13 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { transformFigmaJson } from "./utils/transformFigmaJson.js";
+import { removeMetadata, cleanWithStats } from "./utils/removeMetadata.js";
+import { convertToRelativePositioning } from "./utils/convertToRelativePositioning.js";
 import { findColorItems } from "./utils/findColorItems.js";
 import { extractTypoItems } from "./utils/extract_figma_data.js";
 import dotenv from "dotenv";
 import { Buffer } from "buffer";
+import { optimizeColors } from './utils/optimizeColors.js';
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -21,7 +24,7 @@ if (!fs.existsSync(downloadDir)) {
     fs.mkdirSync(downloadDir);
 }
 
-console.log("FIGMA_API_KEY from env:", process.env.FIGMA_API_KEY);
+//console.log("FIGMA_API_KEY from env:", process.env.FIGMA_API_KEY);
 // Read Figma token from environment variable
 const figmaToken = process.env.FIGMA_API_KEY || "";
 console.log("Figma API token loaded:", figmaToken ? "✅" : "❌");
@@ -34,7 +37,7 @@ const server = new McpServer({
 
 // Helper function to extract file ID and node ID from Figma URL
 export function extractFigmaInfo(url) {
-  console.log("Processing URL:", url);
+  //console.log("Processing URL:", url);
   const result = { fileId: "", nodeId: "" };
   
   // Extract file ID from various Figma URL formats
@@ -63,7 +66,7 @@ export function extractFigmaInfo(url) {
     result.nodeId = decodeURIComponent(nodeMatch[1]);
   }
   
-  console.log("Extracted Figma info:", result);
+  //console.log("Extracted Figma info:", result);
   return result;
 }
 
@@ -80,7 +83,7 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
     ? `https://api.figma.com/v1/files/${fileId}/nodes?ids=${nodeId}`
     : `https://api.figma.com/v1/files/${fileId}`;
 
-  console.log(`Fetching Figma design from: ${apiUrl}`);
+  //console.log(`Fetching Figma design from: ${apiUrl}`);
 
   // Fetch the design data from Figma
   const response = await fetch(apiUrl, {
@@ -94,7 +97,24 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
   }
 
   const data = await response.json();
-  const transformedData = transformFigmaJson(data);
+  
+  // Step 1: Clean metadata first
+  const cleanedData = removeMetadata(data, {
+    preserveStyles: false,         // Don't preserve style definitions
+    preserveComponents: false,     // Don't preserve component definitions
+    preservePositioning: true      // Keep positioning data for conversion
+  });
+  
+  // Step 2: Convert to relative positioning  
+  const relativeData = convertToRelativePositioning(cleanedData);
+  
+  // Step 3: Transform the final data
+  const transformedData = transformFigmaJson(relativeData);
+  
+  // Step 4: Optimize colors (RGBA → Hex)
+  const colorOptimizedData = optimizeColors(transformedData);
+  
+  console.log('🎯 Processed data:', colorOptimizedData);
 
   // Get the design image URL
   const imageApiUrl = nodeId
@@ -116,9 +136,10 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
   const imageUrl = imageData.images[imageKey];
 
   if (download) {
-    // Save JSON file
+    // Save cleaned + transformed JSON file
     const jsonPath = path.join(downloadDir, `${viewport}-design.json`);
-    fs.writeFileSync(jsonPath, JSON.stringify(data, null));
+    fs.writeFileSync(jsonPath, JSON.stringify(colorOptimizedData, null, 2));
+
 
     // Download and save image
     if (imageUrl) {
@@ -134,7 +155,7 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
       jsonPath,
       imagePath: imageUrl ? path.join(downloadDir, `${viewport}-image.png`) : null,
       image: imageUrl ? await fetch(imageUrl).then(res => res.arrayBuffer()).then(buffer => Buffer.from(buffer).toString('base64')) : null,
-      design: transformedData
+      design: colorOptimizedData
     };
   }
 
@@ -149,7 +170,7 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
   }
 
   return {
-    design: transformedData,
+    design: colorOptimizedData,
     image: base64Image,
     mimeType
   };
