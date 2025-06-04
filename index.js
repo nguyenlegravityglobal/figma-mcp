@@ -156,7 +156,7 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
 }
 
 // Combined Figma Responsive Analysis Tool
-server.tool("figmaResponsiveAnalysis",
+server.tool("figmaToHtml",
   { 
     desktopUrl: z.string().optional().describe("Desktop Figma URL"),
     tabletUrl: z.string().optional().describe("Tablet Figma URL"),
@@ -338,6 +338,132 @@ A self-contained, production-ready responsive module including:
 3. **Progressive JavaScript** - Enhancement without dependency
 4. **Performance Optimizations** - Fast loading across all devices
 5. **Documentation Package** - Implementation and maintenance guides
+
+## HTML REFACTORING RULES (Apply when HTML refactoring is requested)
+
+### Background Images for CMS Integration
+- **IMPORTANT:** When using images that need to be CMS-controllable, use HTML elements instead of CSS background images:
+\`\`\`html
+<div class="module-name__bg-overlay z-1 relative">
+  <img src="{{imagesBase64}}" data-src="{{myModule.backgroundImage}}" alt="" class="absolute inset-0 w-full h-full object-cover opacity-50 mix-blend-soft-light -z-1 lazy">
+</div>
+\`\`\`
+
+### Module Structure Standards
+\`\`\`html
+<section class="[module-name] animation" data-module="Mod[ModuleName]">
+    <div class="container anima-bottom">
+        <!-- Content -->
+    </div>
+</section>
+\`\`\`
+
+### Heading Hierarchy Rules
+- Section headings: \`<h2>\` (no additional classes)
+- Item titles: \`<h3>\` (no additional classes)
+- **CRITICAL:** No classes on h1-h6 or p tags. YOU WILL BE FIRED IF YOU ADD ANY CLASSES TO H1-H6 OR P TAGS!
+- Do not add 'space-y-*' classes for elements inside content wrappers
+- Do not add classes for tag a inside content wrapper
+- Do not style margin or padding for tags content: p, a, etc.
+- Check padding or margin of content with JSON from Figma
+
+### Container Usage
+\`\`\`html
+<div class="container">
+    <!-- Content -->
+</div>
+\`\`\`
+
+### CSS and Styling Standards
+- Follow BEM methodology
+- Use Tailwind apply for style, do not add class
+- Maximum 3 words per class
+- Use \`[module-name]-item\` for main items
+- All \`<div>\` tags must have a class
+- Reference variables from @_variables.scss and @repomix-output.txt
+- Use configured color classes, not default Tailwind colors
+
+### Spacing Values (EXTREMELY IMPORTANT)
+- All spacing values MUST be taken from Space.js configuration
+- For pixel values in Figma, use corresponding Space.js value where number is HALF of pixel value:
+  - 24px padding → \`p-12\` (since 12 * 2 = 24px)
+  - 48px padding → \`p-24\` (since 24 * 2 = 48px)
+  - 80px padding → \`p-40\` (since 40 * 2 = 80px)
+- For custom values not in standard scale: \`px-[107px]\`
+- **YOU WILL BE FIRED** if spacing values don't match Space.js configuration
+
+### Precise Spacing Guidelines
+1. **Calculate from Figma JSON coordinates**
+   - Horizontal spacing: compare \`x\` coordinates between elements
+   - Vertical spacing: compare \`y\` coordinates between elements
+   - Account for parent element position in nested elements
+
+2. **Convert pixel values to Tailwind classes**
+   - Divide Figma pixel value by 2 for Tailwind value
+   - 16px → p-8, 24px → p-12, 32px → p-16
+   - Non-standard values: p-[15px], p-[37px]
+
+3. **Container spacing standards**
+   - Desktop: 40px padding (p-20)
+   - Mobile: 16px padding (p-8)
+
+4. **Responsive Design Rules**
+   - Mobile-first approach
+   - Default classes for mobile view
+   - Breakpoint prefixes: md: ≥768px, lg: ≥1024px, xl: ≥1280px
+   - **IMPORTANT:** "large" properties → xl breakpoint, "small" properties → default (mobile)
+
+### Width/Layout Best Practices
+- Prefer fluid widths (w-5/12) over fixed widths (w-[625px])
+- Use justify-between for column spacing instead of fixed gaps
+- Use flex-col md:flex-row for responsive layouts
+
+### Styling Rules
+- NO space-y-* classes for elements inside content wrappers
+- NO styling margin/padding directly on content tags (h1-h6, p, a)
+- Use wrapper divs with mt-* or mb-* classes instead
+
+### Image Handling Standards
+**Standard Images:**
+\`\`\`html
+<div class="aspect-[16/9]">
+    <img src="{{imagesBase64}}" 
+         data-src="https://placehold.co/[width]x[height]" 
+         alt="[description]"
+         class="lazy w-full h-full object-cover">
+</div>
+\`\`\`
+
+**Background Images:**
+\`\`\`html
+<section class="module mod-full-width-long-image relative z-1">
+    <div class="absolute inset-0 -z-1">
+        <picture>
+          <source media="(min-width: 1200px)"
+                  srcset="{{imagesBase64}}"
+                  data-srcset="[desktop-url]">
+          <source media="(min-width: 768px)"
+                  srcset="{{imagesBase64}}"
+                  data-srcset="[tablet-url]">
+          <img src="{{imagesBase64}}"
+              data-src="[mobile-url]"
+              alt="[description]"
+              class="lazy w-full h-full object-cover">
+      </picture>
+    </div>
+</section>
+\`\`\`
+
+### Interactive Elements
+- Buttons with background: \`no-underline btn btn-primary\`
+- Buttons without background: \`no-underline btn-text text-link-primary\`
+
+### Animation Standards
+- Always use: \`anima-bottom\`
+- Sequential delays: \`delay-1\`, \`delay-2\`, etc.
+- Dynamic delays with Handlebars: \`delay-{{ @index }}\`
+
+**CRITICAL REMINDER:** Spacing accuracy is EXTREMELY IMPORTANT. Follow Figma JSON coordinates precisely or you will be fired. Perfect pixel delivery = $2000 USD reward.
 
 ${jsonSection}## Implementation Instructions
 **MANDATORY FIRST STEP**: Check for layout conflicts between viewports
