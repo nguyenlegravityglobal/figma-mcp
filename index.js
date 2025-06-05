@@ -6,8 +6,6 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { transformFigmaJson } from "./utils/transformFigmaJson.js";
-import { findColorItems } from "./utils/findColorItems.js";
-import { extractTypoItems } from "./utils/extract_figma_data.js";
 import dotenv from "dotenv";
 import { Buffer } from "buffer";
 dotenv.config();
@@ -16,33 +14,30 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Create figma-downloader directory if it doesn't exist
-const downloadDir = path.join(__dirname, 'figma-downloader');
+const downloadDir = path.join(__dirname, "figma-downloader");
 if (!fs.existsSync(downloadDir)) {
-    fs.mkdirSync(downloadDir);
+  fs.mkdirSync(downloadDir);
 }
 
-// console.log("FIGMA_API_KEY from env:", process.env.FIGMA_API_KEY);
 // Read Figma token from environment variable
 const figmaToken = process.env.FIGMA_API_KEY || "";
-// console.log("Figma API token loaded:", figmaToken ? "✅" : "❌");
 
 // Create an MCP server
 const server = new McpServer({
   name: "Gravity Global Figma",
-  version: "1.0.0"
+  version: "1.0.0",
 });
 
 // Helper function to extract file ID and node ID from Figma URL
 export function extractFigmaInfo(url) {
-  // console.log("Processing URL:", url);
   const result = { fileId: "", nodeId: "" };
-  
+
   // Extract file ID from various Figma URL formats
   const fileMatchPatterns = [
-    /figma\.com\/file\/([^\/\?]+)/,      // Regular file URL
-    /figma\.com\/design\/([^\/\?]+)/     // Design URL
+    /figma\.com\/file\/([^\/\?]+)/, // Regular file URL
+    /figma\.com\/design\/([^\/\?]+)/, // Design URL
   ];
-  
+
   for (const pattern of fileMatchPatterns) {
     const match = url.match(pattern);
     if (match && match[1]) {
@@ -50,31 +45,34 @@ export function extractFigmaInfo(url) {
       break;
     }
   }
-  
+
   // If no match, assume it's already a file ID
   if (!result.fileId && url) {
     result.fileId = url;
   }
-  
+
   // Extract node ID from URL query parameter
   const nodeMatch = url.match(/node-id=([^&]+)/);
   if (nodeMatch && nodeMatch[1]) {
     // URL-decode the node ID
     result.nodeId = decodeURIComponent(nodeMatch[1]);
   }
-  
-  // console.log("Extracted Figma info:", result);
+
   return result;
 }
 
-export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "desktop") {
+export async function fetchFigmaDesign(
+  figmaUrl,
+  download = false,
+  viewport = "desktop"
+) {
   // Extract file ID and node ID from URL
   const { fileId, nodeId } = extractFigmaInfo(figmaUrl);
-  
+
   if (!fileId) {
     throw new Error("Could not extract a valid Figma file ID from the URL.");
   }
-  
+
   // Construct the API URL for design data
   const apiUrl = nodeId
     ? `https://api.figma.com/v1/files/${fileId}/nodes?ids=${nodeId}`
@@ -85,8 +83,8 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
   // Fetch the design data from Figma
   const response = await fetch(apiUrl, {
     headers: {
-      'X-Figma-Token': figmaToken
-    }
+      "X-Figma-Token": figmaToken,
+    },
   });
 
   if (!response.ok) {
@@ -98,17 +96,22 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
 
   // Get the design image URL
   const imageApiUrl = nodeId
-    ? `https://api.figma.com/v1/images/${fileId}?ids=${nodeId.replace("-", ":")}&format=png`
+    ? `https://api.figma.com/v1/images/${fileId}?ids=${nodeId.replace(
+        "-",
+        ":"
+      )}&format=png`
     : `https://api.figma.com/v1/images/${fileId}?format=png`;
 
   const imageResponse = await fetch(imageApiUrl, {
     headers: {
-      'X-Figma-Token': figmaToken
-    }
+      "X-Figma-Token": figmaToken,
+    },
   });
 
   if (!imageResponse.ok) {
-    throw new Error(`Figma API error when fetching image: ${imageResponse.statusText}`);
+    throw new Error(
+      `Figma API error when fetching image: ${imageResponse.statusText}`
+    );
   }
 
   const imageData = await imageResponse.json();
@@ -123,7 +126,8 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
     // Download and save image
     if (imageUrl) {
       const imgRes = await fetch(imageUrl);
-      if (!imgRes.ok) throw new Error("Failed to download image from Figma CDN");
+      if (!imgRes.ok)
+        throw new Error("Failed to download image from Figma CDN");
       const arrayBuffer = await imgRes.arrayBuffer();
       const imagePath = path.join(downloadDir, `${viewport}-image.png`);
       fs.writeFileSync(imagePath, Buffer.from(arrayBuffer));
@@ -132,9 +136,15 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
     return {
       success: true,
       jsonPath,
-      imagePath: imageUrl ? path.join(downloadDir, `${viewport}-image.png`) : null,
-      image: imageUrl ? await fetch(imageUrl).then(res => res.arrayBuffer()).then(buffer => Buffer.from(buffer).toString('base64')) : null,
-      design: transformedData
+      imagePath: imageUrl
+        ? path.join(downloadDir, `${viewport}-image.png`)
+        : null,
+      image: imageUrl
+        ? await fetch(imageUrl)
+            .then((res) => res.arrayBuffer())
+            .then((buffer) => Buffer.from(buffer).toString("base64"))
+        : null,
+      design: transformedData,
     };
   }
 
@@ -151,79 +161,282 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
   return {
     design: transformedData,
     image: base64Image,
-    mimeType
+    mimeType,
   };
 }
+server.tool(
+  "downloadFigmaImages",
+  {
+    fileId: z
+      .string()
+      .describe("Figma file ID extracted from the Figma URL used in figmaToHtml tool. Extract from URL like: https://figma.com/design/[THIS_PART]/... or https://figma.com/file/[THIS_PART]/..."),
+    nodeIds: z.array(z.string())
+      .describe(`Node IDs that MUST be extracted from the JSON data returned by the figmaToHtml tool.
 
-// Combined Figma Responsive Analysis Tool
-server.tool("figmaToHtml",
-  { 
-    desktopUrl: z.string().optional().describe("Desktop Figma URL"),
-    tabletUrl: z.string().optional().describe("Tablet Figma URL"),
-    mobileUrl: z.string().optional().describe("Mobile Figma URL"),
-    includeImages: z.boolean().optional().default(true).describe("Include images in the analysis"),
-    includeJsonData: z.boolean().optional().default(true).describe("Include JSON design data in the analysis"),
+⚠️ CRITICAL - SOURCE OF DATA: 
+- These node IDs MUST come from the JSON response of figmaToHtml tool
+- DO NOT use any other source for node IDs
+- DO NOT guess or generate node IDs
+
+📋 EXTRACTION PROCESS from figmaToHtml JSON response:
+1. Take the JSON data returned from figmaToHtml tool call
+2. Scan ALL nodes in the JSON data structure recursively 
+3. Look for nodes with fills array containing both:
+   - type: "IMAGE" 
+   - imageRef property (this confirms it's a real image)
+4. Extract the node.id from those qualifying nodes
+
+✅ VALID IMAGE NODE example:
+{
+  "id": "123-456",
+  "fills": [
+    {
+      "type": "IMAGE",
+      "imageRef": "abc123def456",  // ← This confirms real image
+      "scaleMode": "FILL"
+    }
+  ]
+}
+
+❌ EXCLUDE these (NOT real images):
+- Nodes with type: "IMAGE" but NO imageRef property
+- Solid color fills (type: "SOLID")
+- Gradient fills (type: "GRADIENT_LINEAR", "GRADIENT_RADIAL") 
+- Empty fills array or no fills property
+
+🔧 OUTPUT FORMAT:
+- Pass the node.id values as strings in this array
+- Keep exact dash format from Figma: ["123-456", "789-012", "345-678"]
+- Each ID corresponds to a node with confirmed actual image content
+
+This ensures only real images are downloaded, not design elements or placeholders.`),
+    folderName: z
+      .string()
+      .optional()
+      .describe("Optional folder name (will auto-generate if not provided)"),
   },
   async (params) => {
     try {
       if (!figmaToken) {
         return {
-          content: [{ 
-            type: "text", 
-            text: "Error: Figma token not found. Please set the FIGMA_API_KEY environment variable."
-          }]
+          content: [
+            {
+              type: "text",
+              text: "Error: Figma token not found. Please set the FIGMA_API_KEY environment variable.",
+            },
+          ],
+        };
+      }
+
+      const fileId = params.fileId;
+      const targetNodeIds = params.nodeIds;
+
+      if (!fileId) {
+        throw new Error("Figma file ID is required.");
+      }
+
+      if (!targetNodeIds || targetNodeIds.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No node IDs provided. Please extract node IDs from JSON data that have actual images (fills with type: 'IMAGE' and imageRef property).",
+            },
+          ],
+        };
+      }
+
+      // Create unique folder name
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")
+        .slice(0, -5);
+      const folderName = params.folderName || `figma-images-${timestamp}`;
+      const imagesDownloadDir = path.join(downloadDir, folderName);
+
+      if (!fs.existsSync(imagesDownloadDir)) {
+        fs.mkdirSync(imagesDownloadDir, { recursive: true });
+      }
+
+      console.log(
+        `Using provided node IDs (${targetNodeIds.length} nodes):`,
+        targetNodeIds
+      );
+
+      // Download images in batches
+      const downloadedImages = [];
+      const imageMapping = {};
+      const batchSize = 5;
+
+      for (let i = 0; i < targetNodeIds.length; i += batchSize) {
+        const batch = targetNodeIds.slice(i, i + batchSize);
+        const nodeIdsParam = batch.map((id) => id.replace("-", ":")).join(",");
+
+        const imageApiUrl = `https://api.figma.com/v1/images/${fileId}?ids=${nodeIdsParam}&format=png&scale=2`;
+
+        try {
+          const imageResponse = await fetch(imageApiUrl, {
+            headers: { "X-Figma-Token": figmaToken },
+          });
+
+          if (!imageResponse.ok) {
+            console.warn(
+              `Failed to fetch batch starting at index ${i}: ${imageResponse.statusText}`
+            );
+            continue;
+          }
+
+          const imageData = await imageResponse.json();
+
+          for (const [nodeKey, imageUrl] of Object.entries(imageData.images)) {
+            if (imageUrl) {
+              try {
+                const imgRes = await fetch(imageUrl);
+                if (imgRes.ok) {
+                  const arrayBuffer = await imgRes.arrayBuffer();
+                  const originalNodeId = nodeKey.replace(":", "-");
+                  const filename = `${originalNodeId}.png`;
+                  const imagePath = path.join(imagesDownloadDir, filename);
+                  const relativePath = path.join(folderName, filename);
+
+                  fs.writeFileSync(imagePath, Buffer.from(arrayBuffer));
+                  downloadedImages.push(filename);
+
+                  // Create mapping for HTML replacement
+                  imageMapping[originalNodeId] = {
+                    localPath: imagePath,
+                    relativePath: relativePath,
+                    filename: filename,
+                    nodeId: originalNodeId,
+                  };
+                }
+              } catch (error) {}
+            }
+          }
+        } catch (error) {}
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `✅ Downloaded ${downloadedImages.length} images to folder: ${imagesDownloadDir}\n\n` +
+              `**Image Mapping for HTML replacement:**\n` +
+              `\`\`\`json\n${JSON.stringify(
+                imageMapping,
+                null,
+                2
+              )}\n\`\`\`\n\n` +
+              `**Usage in HTML:**\n` +
+              `- Use node IDs as keys to replace image sources\n` +
+              `- Use relativePath for web-friendly paths\n` +
+              `- Use localPath for absolute file system paths\n\n` +
+              `**Downloaded files:** ${downloadedImages.join(", ")}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `❌ Error downloading images: ${error.message}`,
+          },
+        ],
+      };
+    }
+  }
+); // Combined Figma Responsive Analysis Tool
+server.tool(
+  "figmaToHtml",
+  {
+    desktopUrl: z.string().optional().describe("Desktop Figma URL"),
+    tabletUrl: z.string().optional().describe("Tablet Figma URL"),
+    mobileUrl: z.string().optional().describe("Mobile Figma URL"),
+    includeImages: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe("Include images in the analysis"),
+    includeJsonData: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe("Include JSON design data in the analysis"),
+  },
+  async (params) => {
+    try {
+      if (!figmaToken) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Error: Figma token not found. Please set the FIGMA_API_KEY environment variable.",
+            },
+          ],
         };
       }
 
       const content = [];
       const imageRefs = [];
       const designs = {};
-      
+
       // Fetch design data for each viewport
       const viewports = [
         { url: params.desktopUrl, name: "desktop" },
         { url: params.tabletUrl, name: "tablet" },
-        { url: params.mobileUrl, name: "mobile" }
+        { url: params.mobileUrl, name: "mobile" },
       ];
 
       for (const viewport of viewports) {
         if (viewport.url) {
           try {
             const result = await fetchFigmaDesign(viewport.url);
-            
+
             // Add images if requested
             if (params.includeImages && result.image) {
               content.push({
                 type: "image",
                 data: result.image,
-                mimeType: result.mimeType
+                mimeType: result.mimeType,
               });
               imageRefs.push(`@${viewport.name}.png`);
             }
-            
+
             // Store JSON data if requested
             if (params.includeJsonData) {
               designs[viewport.name] = result.design;
             }
-            
           } catch (error) {
             content.push({
               type: "text",
-              text: `Error fetching ${viewport.name} design: ${error.message}`
+              text: `Error fetching ${viewport.name} design: ${error.message}`,
             });
-            console.error(`Error fetching ${viewport.name} design:`, error.message);
+            console.error(
+              `Error fetching ${viewport.name} design:`,
+              error.message
+            );
           }
         }
       }
 
       // Create comprehensive analysis prompt
-      const imageSection = params.includeImages && imageRefs.length > 0 
-        ? `## Visual Analysis Context\nAnalyzing designs from: ${imageRefs.join(', ')}\n\n` 
-        : '';
+      const imageSection =
+        params.includeImages && imageRefs.length > 0
+          ? `## Visual Analysis Context\nAnalyzing designs from: ${imageRefs.join(
+              ", "
+            )}\n\n`
+          : "";
 
-      const jsonSection = params.includeJsonData && Object.keys(designs).length > 0
-        ? `## Design Data Analysis\nBelow is the extracted design data from Figma for technical analysis:\n\n\`\`\`json\n${JSON.stringify(designs, null, 2)}\n\`\`\`\n\n`
-        : '';
+      const jsonSection =
+        params.includeJsonData && Object.keys(designs).length > 0
+          ? `## Design Data Analysis\nBelow is the extracted design data from Figma for technical analysis:\n\n\`\`\`json\n${JSON.stringify(
+              designs,
+              null,
+              2
+            )}\n\`\`\`\n\n`
+          : "";
 
       const prompt = `# Comprehensive Responsive Design Analysis & Implementation
 
@@ -345,7 +558,7 @@ A self-contained, production-ready responsive module including:
 - **IMPORTANT:** When using images that need to be CMS-controllable, use HTML elements instead of CSS background images:
 \`\`\`html
 <div class="module-name__bg-overlay z-1 relative">
-  <img src="{{imagesBase64}}" data-src="{{myModule.backgroundImage}}" alt="" class="absolute inset-0 w-full h-full object-cover opacity-50 mix-blend-soft-light -z-1 lazy">
+  <img src="{{myModule.backgroundImage}}" alt="" class="absolute inset-0 w-full h-full object-cover opacity-50 mix-blend-soft-light -z-1">
 </div>
 \`\`\`
 
@@ -376,68 +589,49 @@ A self-contained, production-ready responsive module including:
 
 ### CSS and Styling Standards
 - Follow BEM methodology
-- Use Tailwind apply for style, do not add class
 - Maximum 3 words per class
 - Use \`[module-name]-item\` for main items
 - All \`<div>\` tags must have a class
 - Reference variables from @_variables.scss and @repomix-output.txt
-- Use configured color classes, not default Tailwind colors
 
-### Spacing Values (EXTREMELY IMPORTANT)
-- All spacing values MUST be taken from Space.js configuration
-- For pixel values in Figma, use corresponding Space.js value where number is HALF of pixel value:
-  - 24px padding → \`p-12\` (since 12 * 2 = 24px)
-  - 48px padding → \`p-24\` (since 24 * 2 = 48px)
-  - 80px padding → \`p-40\` (since 40 * 2 = 80px)
-- For custom values not in standard scale: \`px-[107px]\`
-- **YOU WILL BE FIRED** if spacing values don't match Space.js configuration
-
-### Precise Spacing Guidelines
+### Spacing Guidelines
 1. **Calculate from Figma JSON coordinates**
    - Horizontal spacing: compare \`x\` coordinates between elements
    - Vertical spacing: compare \`y\` coordinates between elements
    - Account for parent element position in nested elements
 
-2. **Convert pixel values to Tailwind classes**
-   - Divide Figma pixel value by 2 for Tailwind value
-   - 16px → p-8, 24px → p-12, 32px → p-16
-   - Non-standard values: p-[15px], p-[37px]
+2. **Extract exact pixel values from Figma**
+   - Use precise measurements from design
+   - Maintain spacing consistency across breakpoints
 
 3. **Container spacing standards**
-   - Desktop: 40px padding (p-20)
-   - Mobile: 16px padding (p-8)
+   - Desktop: 40px padding
+   - Mobile: 16px padding
 
 4. **Responsive Design Rules**
    - Mobile-first approach
-   - Default classes for mobile view
-   - Breakpoint prefixes: md: ≥768px, lg: ≥1024px, xl: ≥1280px
-   - **IMPORTANT:** "large" properties → xl breakpoint, "small" properties → default (mobile)
-
-### Width/Layout Best Practices
-- Prefer fluid widths (w-5/12) over fixed widths (w-[625px])
-- Use justify-between for column spacing instead of fixed gaps
-- Use flex-col md:flex-row for responsive layouts
+   - Use appropriate breakpoints based on content needs
 
 ### Styling Rules
-- NO space-y-* classes for elements inside content wrappers
-- NO styling margin/padding directly on content tags (h1-h6, p, a)
-- Use wrapper divs with mt-* or mb-* classes instead
+- NO direct styling on content tags (h1-h6, p, a)
+- Use wrapper divs with appropriate spacing instead
 
 ### Image Handling Standards
 **Standard Images:**
 \`\`\`html
-<div class="aspect-[16/9]">
+<div class="image-container">
     <img src="{{imagesBase64}}" 
          data-src="https://placehold.co/[width]x[height]" 
          alt="[description]"
-         class="lazy w-full h-full object-cover">
+         loading="lazy"
+         class="image-responsive">
 </div>
 \`\`\`
 
 **Background Images:**
 \`\`\`html
-<section class="module mod-full-width-long-image relative z-1">
-    <div class="absolute inset-0 -z-1">
+<section class="module mod-full-width-long-image">
+    <div class="background-container">
         <picture>
           <source media="(min-width: 1200px)"
                   srcset="{{imagesBase64}}"
@@ -448,22 +642,21 @@ A self-contained, production-ready responsive module including:
           <img src="{{imagesBase64}}"
               data-src="[mobile-url]"
               alt="[description]"
-              class="lazy w-full h-full object-cover">
+              loading="lazy"
+              class="background-image">
       </picture>
     </div>
 </section>
 \`\`\`
 
 ### Interactive Elements
-- Buttons with background: \`no-underline btn btn-primary\`
-- Buttons without background: \`no-underline btn-text text-link-primary\`
+- Buttons with background: \`btn btn-primary\`
+- Buttons without background: \`btn-text text-link-primary\`
 
 ### Animation Standards
 - Always use: \`anima-bottom\`
-- Sequential delays: \`delay-1\`, \`delay-2\`, etc.
-- Dynamic delays with Handlebars: \`delay-{{ @index }}\`
-
-**CRITICAL REMINDER:** Spacing accuracy is EXTREMELY IMPORTANT. Follow Figma JSON coordinates precisely or you will be fired. Perfect pixel delivery = $2000 USD reward.
+- Sequential delays for staggered animations
+- Dynamic delays with template variables
 
 ${jsonSection}## Implementation Instructions
 **MANDATORY FIRST STEP**: Check for layout conflicts between viewports
@@ -487,18 +680,18 @@ ${jsonSection}## Implementation Instructions
 
       content.push({
         type: "text",
-        text: prompt
+        text: prompt,
       });
 
       return { content };
     } catch (error) {
       return {
         content: [
-          { 
-            type: "text", 
-            text: `Error in Figma responsive analysis: ${error.message}`
-          }
-        ]
+          {
+            type: "text",
+            text: `Error in Figma responsive analysis: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -507,4 +700,4 @@ ${jsonSection}## Implementation Instructions
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 await server.connect(transport);
-// await fetchFigmaDesign("https://www.figma.com/design/dYYTLSIATnassRFckYWbpN/NPKI-Website?node-id=4362-10168&t=CKE6uIFszEQngzLt-4"); 
+// await fetchFigmaDesign("https://www.figma.com/design/dYYTLSIATnassRFckYWbpN/NPKI-Website?node-id=4362-10168&t=CKE6uIFszEQngzLt-4");

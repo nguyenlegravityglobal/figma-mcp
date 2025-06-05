@@ -284,6 +284,55 @@ export function transformFigmaJson(rawData) {
     return null;
   }
 
+  function removeEmptyProperties(obj) {
+    // Recursively remove empty properties from an object
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      // Filter out null/undefined elements and recursively clean remaining items
+      const cleanedArray = obj
+        .filter(item => item !== null && item !== undefined)
+        .map(item => removeEmptyProperties(item));
+      
+      // Return undefined if array is empty after cleaning
+      return cleanedArray.length > 0 ? cleanedArray : undefined;
+    }
+
+    if (typeof obj === 'object') {
+      const cleanedObj = {};
+      
+      for (const [key, value] of Object.entries(obj)) {
+        // Skip null, undefined, empty strings, empty arrays, and empty objects
+        if (value === null || value === undefined || value === '') {
+          continue;
+        }
+        
+        if (Array.isArray(value) && value.length === 0) {
+          continue;
+        }
+        
+        if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) {
+          continue;
+        }
+        
+        // Recursively clean the value
+        const cleanedValue = removeEmptyProperties(value);
+        
+        // Only add if the cleaned value is not empty
+        if (cleanedValue !== undefined) {
+          cleanedObj[key] = cleanedValue;
+        }
+      }
+      
+      // Return undefined if object is empty after cleaning
+      return Object.keys(cleanedObj).length > 0 ? cleanedObj : undefined;
+    }
+
+    return obj;
+  }
+
   function transformNode(rawNode, styles) {
     // Transform a Figma node into a simplified structure
     if (!rawNode || typeof rawNode !== "object") {
@@ -351,7 +400,7 @@ export function transformFigmaJson(rawData) {
 
     // Process children
     if (rawNode.children && Array.isArray(rawNode.children)) {
-      node.children = [];
+      const transformedChildren = [];
       for (const child of rawNode.children) {
         // Skip invisible nodes
         if (child && child.visible === false) {
@@ -360,8 +409,13 @@ export function transformFigmaJson(rawData) {
 
         const transformedChild = transformNode(child, styles);
         if (transformedChild) {
-          node.children.push(transformedChild);
+          transformedChildren.push(transformedChild);
         }
+      }
+      
+      // Only add children if there are any
+      if (transformedChildren.length > 0) {
+        node.children = transformedChildren;
       }
     }
 
@@ -390,7 +444,8 @@ export function transformFigmaJson(rawData) {
       node.componentId = rawNode.componentId;
     }
 
-    return node;
+    // Clean up empty properties before returning
+    return removeEmptyProperties(node);
   }
 
   // Initialize styles dictionary
@@ -413,23 +468,35 @@ export function transformFigmaJson(rawData) {
       }
     }
 
-    result.styles = styles;
+    // Clean up styles object
+    const cleanedStyles = removeEmptyProperties(styles);
+    if (cleanedStyles) {
+      result.styles = cleanedStyles;
+    }
+
     // console.log(
     //   `Transformed Figma nodes data with ${
     //     Object.keys(styles).length
     //   } extracted styles`
     // );
-    return result;
+    return removeEmptyProperties(result);
   }
   // Check if this is a direct file response
   else if (rawData && rawData.document) {
     // Handle file response (from /files endpoint)
     document = transformNode(rawData.document, styles);
 
-    return {
+    const result = {
       document: document,
-      styles: styles,
     };
+
+    // Only add styles if they exist and are not empty
+    const cleanedStyles = removeEmptyProperties(styles);
+    if (cleanedStyles) {
+      result.styles = cleanedStyles;
+    }
+
+    return removeEmptyProperties(result);
   }
   // Fallback for other structures
   else {
@@ -438,10 +505,17 @@ export function transformFigmaJson(rawData) {
     );
     document = transformNode(rawData, styles);
 
-    return {
+    const result = {
       document: document,
-      styles: styles,
     };
+
+    // Only add styles if they exist and are not empty
+    const cleanedStyles = removeEmptyProperties(styles);
+    if (cleanedStyles) {
+      result.styles = cleanedStyles;
+    }
+
+    return removeEmptyProperties(result);
   }
 }
 
