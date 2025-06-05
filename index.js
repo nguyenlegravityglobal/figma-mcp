@@ -5,9 +5,7 @@ import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { transformFigmaJson } from "./utils/transformFigmaJson.js";
-import { findColorItems } from "./utils/findColorItems.js";
-import { extractTypoItems } from "./utils/extract_figma_data.js";
+import { transformFigmaJson, optimizeVariablesData } from "./utils/transformFigmaJson.js";
 import dotenv from "dotenv";
 import { Buffer } from "buffer";
 dotenv.config();
@@ -67,6 +65,23 @@ export function extractFigmaInfo(url) {
   return result;
 }
 
+export async function fetchFigmaVariables(figmaUrl) {
+  const { fileId } = extractFigmaInfo(figmaUrl);
+  const variablesUrl = `https://api.figma.com/v1/files/${fileId}/variables/local`;
+  const variablesResponse = await fetch(variablesUrl, {
+    headers: {
+      'X-Figma-Token': figmaToken
+    }
+  });
+
+  if (!variablesResponse.ok) {
+    throw new Error(`Figma API error: ${variablesResponse.statusText}`);
+  }
+
+  const variablesData = await variablesResponse.json();
+  return variablesData;
+}
+
 export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "desktop") {
   // Extract file ID and node ID from URL
   const { fileId, nodeId } = extractFigmaInfo(figmaUrl);
@@ -94,7 +109,9 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
   }
 
   const data = await response.json();
+  
   const transformedData = transformFigmaJson(data);
+  // Variables are now resolved within the transformed data
 
   // Get the design image URL
   const imageApiUrl = nodeId
@@ -119,7 +136,7 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
     // Save JSON file
     const jsonPath = path.join(downloadDir, `${viewport}-design.json`);
     fs.writeFileSync(jsonPath, JSON.stringify(data, null));
-
+    
     // Download and save image
     if (imageUrl) {
       const imgRes = await fetch(imageUrl);
@@ -155,7 +172,451 @@ export async function fetchFigmaDesign(figmaUrl, download = false, viewport = "d
   };
 }
 
-// Combined Figma Responsive Analysis Tool
+export async function downloadAllImagesFromDesign(figmaUrl, folderName) {
+  const { fileId, nodeId } = extractFigmaInfo(figmaUrl);
+  
+  if (!fileId) {
+    throw new Error("Could not extract a valid Figma file ID from the URL.");
+  }
+  
+  // Create unique download folder
+  const imagesDownloadDir = path.join(downloadDir, folderName);
+  if (!fs.existsSync(imagesDownloadDir)) {
+    fs.mkdirSync(imagesDownloadDir, { recursive: true });
+  }
+
+  // Fetch the design data to get all nodes with fills
+  const apiUrl = nodeId
+    ? `https://api.figma.com/v1/files/${fileId}/nodes?ids=${nodeId}`
+    : `https://api.figma.com/v1/files/${fileId}`;
+
+  const response = await fetch(apiUrl, {
+    headers: {
+      'X-Figma-Token': figmaToken
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Figma API error: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  
+  // Extract all image node IDs from the design
+  const imageNodeIds = [];
+  const allNodes = [];
+  
+  function extractAllNodes(node) {
+    if (node) {
+      allNodes.push(node);
+      
+      // Check if this node has image fills
+      if (node.fills && Array.isArray(node.fills)) {
+        node.fills.forEach(fill => {
+          if (fill.type === 'IMAGE' && fill.imageRef) {
+            imageNodeIds.push(node.id);
+          }
+        });
+      }
+      
+      // Check if this node itself is an image (for component instances, etc.)
+      if (node.type === 'RECTANGLE' || node.type === 'ELLIPSE' || node.type === 'POLYGON') {
+        if (node.fills && node.fills.some(fill => fill.type === 'IMAGE')) {
+          imageNodeIds.push(node.id);
+        }
+      }
+      
+      // Special handling for image nodes
+      if (node.type === 'IMAGE') {
+        imageNodeIds.push(node.id);
+      }
+      
+      // Recursively process children
+      if (node.children && Array.isArray(node.children)) {
+        node.children.forEach(child => extractAllNodes(child));
+      }
+    }
+  }
+  
+  // Start extraction from the correct node
+  const rootNodes = nodeId ? Object.values(data.nodes) : [data.document];
+  rootNodes.forEach(node => {
+    if (node) extractAllNodes(node);
+  });
+  
+  console.log(`Found ${allNodes.length} total nodes, ${imageNodeIds.length} image nodes`);
+  console.log('Image node IDs:', imageNodeIds);
+
+  // If no image nodes found, try to get all exportable nodes as images
+  if (imageNodeIds.length === 0) {
+    console.log('No image nodes found, trying to export all visible nodes as images...');
+    
+    // Get all nodes that can be exported (frames, components, etc.)
+    const exportableNodes = allNodes.filter(node => 
+      node && node.id && (
+        node.type === 'FRAME' || 
+        node.type === 'COMPONENT' || 
+        node.type === 'INSTANCE' ||
+        node.type === 'GROUP' ||
+        node.type === 'RECTANGLE' ||
+        node.type === 'ELLIPSE' ||
+        node.type === 'TEXT'
+      ) && node.visible !== false
+    ).map(node => node.id);
+    
+    console.log(`Found ${exportableNodes.length} exportable nodes`);
+    
+    if (exportableNodes.length > 0) {
+      // Try to export first 10 nodes as images
+      const nodesToExport = exportableNodes.slice(0, 10);
+      const nodeIdsParam = nodesToExport.map(id => id.replace("-", ":")).join(",");
+      
+      const imageApiUrl = `https://api.figma.com/v1/images/${fileId}?ids=${nodeIdsParam}&format=png&scale=2`;
+      
+      try {
+        const imageResponse = await fetch(imageApiUrl, {
+          headers: {
+            'X-Figma-Token': figmaToken
+          }
+        });
+
+        if (imageResponse.ok) {
+          const imageData = await imageResponse.json();
+          const downloadedImages = [];
+          let downloadedCount = 0;
+          
+          for (const [nodeKey, imageUrl] of Object.entries(imageData.images)) {
+            if (imageUrl) {
+              try {
+                const imgRes = await fetch(imageUrl);
+                if (imgRes.ok) {
+                  const arrayBuffer = await imgRes.arrayBuffer();
+                  const filename = `node-${nodeKey.replace(":", "-")}.png`;
+                  const imagePath = path.join(imagesDownloadDir, filename);
+                  fs.writeFileSync(imagePath, Buffer.from(arrayBuffer));
+                  downloadedImages.push(filename);
+                  downloadedCount++;
+                }
+              } catch (error) {
+                console.warn(`Failed to download node image ${nodeKey}:`, error.message);
+              }
+            }
+          }
+          
+          if (downloadedCount > 0) {
+            return {
+              success: true,
+              folderPath: imagesDownloadDir,
+              downloadedCount,
+              images: downloadedImages
+            };
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to export nodes as images:', error.message);
+      }
+    }
+    
+    // Fallback: Get the main design as a single image
+    const imageApiUrl = nodeId
+      ? `https://api.figma.com/v1/images/${fileId}?ids=${nodeId.replace("-", ":")}&format=png&scale=2`
+      : `https://api.figma.com/v1/images/${fileId}?format=png&scale=2`;
+
+    const imageResponse = await fetch(imageApiUrl, {
+      headers: {
+        'X-Figma-Token': figmaToken
+      }
+    });
+
+    if (!imageResponse.ok) {
+      throw new Error(`Figma API error when fetching main image: ${imageResponse.statusText}`);
+    }
+
+    const imageData = await imageResponse.json();
+    const imageKey = nodeId ? nodeId.replace("-", ":") : Object.keys(imageData.images)[0];
+    const imageUrl = imageData.images[imageKey];
+
+    if (imageUrl) {
+      const imgRes = await fetch(imageUrl);
+      if (imgRes.ok) {
+        const arrayBuffer = await imgRes.arrayBuffer();
+        const imagePath = path.join(imagesDownloadDir, 'main-design.png');
+        fs.writeFileSync(imagePath, Buffer.from(arrayBuffer));
+      }
+    }
+    
+    return {
+      success: true,
+      folderPath: imagesDownloadDir,
+      downloadedCount: 1,
+      images: ['main-design.png']
+    };
+  }
+
+  // Download all individual images
+  const downloadedImages = [];
+  let downloadedCount = 0;
+
+  // Process images in batches to avoid rate limiting
+  const batchSize = 5;
+  for (let i = 0; i < imageNodeIds.length; i += batchSize) {
+    const batch = imageNodeIds.slice(i, i + batchSize);
+    const nodeIdsParam = batch.map(id => id.replace("-", ":")).join(",");
+    
+    const imageApiUrl = `https://api.figma.com/v1/images/${fileId}?ids=${nodeIdsParam}&format=png&scale=2`;
+    
+    try {
+      const imageResponse = await fetch(imageApiUrl, {
+        headers: {
+          'X-Figma-Token': figmaToken
+        }
+      });
+
+      if (!imageResponse.ok) {
+        console.warn(`Failed to fetch batch starting at index ${i}: ${imageResponse.statusText}`);
+        continue;
+      }
+
+      const imageData = await imageResponse.json();
+      
+      // Download each image in the batch
+      for (const [nodeKey, imageUrl] of Object.entries(imageData.images)) {
+        if (imageUrl) {
+          try {
+            const imgRes = await fetch(imageUrl);
+            if (imgRes.ok) {
+              const arrayBuffer = await imgRes.arrayBuffer();
+              const filename = `image-${nodeKey.replace(":", "-")}.png`;
+              const imagePath = path.join(imagesDownloadDir, filename);
+              fs.writeFileSync(imagePath, Buffer.from(arrayBuffer));
+              downloadedImages.push(filename);
+              downloadedCount++;
+            }
+          } catch (error) {
+            console.warn(`Failed to download image ${nodeKey}:`, error.message);
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(`Failed to process batch starting at index ${i}:`, error.message);
+    }
+  }
+
+  return {
+    success: true,
+    folderPath: imagesDownloadDir,
+    downloadedCount,
+    images: downloadedImages
+  };
+}
+
+// Separate tool for downloading Figma images
+server.tool("downloadFigmaImages",
+  {
+    figmaUrl: z.string().describe("Figma URL to download images from"),
+    nodeIds: z.array(z.string()).optional().describe("Specific node IDs to download (if empty, will auto-detect)"),
+    folderName: z.string().optional().describe("Optional folder name (will auto-generate if not provided)")
+  },
+  async (params) => {
+    try {
+      if (!figmaToken) {
+        return {
+          content: [{
+            type: "text",
+            text: "Error: Figma token not found. Please set the FIGMA_API_KEY environment variable."
+          }]
+        };
+      }
+
+      const { fileId, nodeId } = extractFigmaInfo(params.figmaUrl);
+      
+      if (!fileId) {
+        throw new Error("Could not extract a valid Figma file ID from the URL.");
+      }
+
+      // Create unique folder name
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      const folderName = params.folderName || `figma-images-${timestamp}`;
+      const imagesDownloadDir = path.join(downloadDir, folderName);
+      
+      if (!fs.existsSync(imagesDownloadDir)) {
+        fs.mkdirSync(imagesDownloadDir, { recursive: true });
+      }
+
+      let targetNodeIds = params.nodeIds || [];
+      
+      // If specific node IDs provided, use them directly (from previous JSON data analysis)
+      if (targetNodeIds.length > 0) {
+        console.log(`Using provided node IDs (${targetNodeIds.length} nodes):`, targetNodeIds);
+      } else {
+        // If no specific node IDs provided, auto-detect from design
+        console.log('No node IDs provided, auto-detecting from Figma API...');
+        
+        const apiUrl = nodeId
+          ? `https://api.figma.com/v1/files/${fileId}/nodes?ids=${nodeId}`
+          : `https://api.figma.com/v1/files/${fileId}`;
+
+        const response = await fetch(apiUrl, {
+          headers: { 'X-Figma-Token': figmaToken }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Figma API error: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        
+        // Extract nodes that have images or can be exported as images
+        function findImageNodes(node, foundNodes = []) {
+          if (!node) return foundNodes;
+          
+          // Check if node has image fills
+          if (node.fills && Array.isArray(node.fills)) {
+            const hasImageFill = node.fills.some(fill => fill.type === 'IMAGE');
+            if (hasImageFill) {
+              foundNodes.push({
+                id: node.id,
+                name: node.name || 'Unnamed',
+                type: node.type,
+                reason: 'has_image_fill'
+              });
+            }
+          }
+          
+          // Include frames, components, and other exportable nodes that might contain images
+          if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+            foundNodes.push({
+              id: node.id,
+              name: node.name || 'Unnamed',
+              type: node.type,
+              reason: 'exportable_container'
+            });
+          }
+          
+          // Include specific image nodes
+          if (node.type === 'IMAGE' || node.type === 'RECTANGLE' || node.type === 'ELLIPSE') {
+            foundNodes.push({
+              id: node.id,
+              name: node.name || 'Unnamed',
+              type: node.type,
+              reason: 'image_node'
+            });
+          }
+          
+          // Recursively check children
+          if (node.children && Array.isArray(node.children)) {
+            node.children.forEach(child => findImageNodes(child, foundNodes));
+          }
+          
+          return foundNodes;
+        }
+        
+        const rootNodes = nodeId ? Object.values(data.nodes) : [data.document];
+        const imageNodes = [];
+        rootNodes.forEach(node => {
+          if (node) findImageNodes(node, imageNodes);
+        });
+        
+        // Remove duplicates and get unique node IDs
+        const uniqueNodes = imageNodes.filter((node, index, self) => 
+          index === self.findIndex(n => n.id === node.id)
+        );
+        
+        targetNodeIds = uniqueNodes.map(node => node.id);
+        
+        console.log(`Auto-detected ${uniqueNodes.length} nodes for image export:`, 
+          uniqueNodes.map(n => `${n.name} (${n.type})`));
+      }
+
+      if (targetNodeIds.length === 0) {
+        return {
+          content: [{
+            type: "text", 
+            text: "No image nodes found to download."
+          }]
+        };
+      }
+
+      // Download images in batches
+      const downloadedImages = [];
+      const imageMapping = {};
+      const batchSize = 5;
+      
+      for (let i = 0; i < targetNodeIds.length; i += batchSize) {
+        const batch = targetNodeIds.slice(i, i + batchSize);
+        const nodeIdsParam = batch.map(id => id.replace("-", ":")).join(",");
+        
+        const imageApiUrl = `https://api.figma.com/v1/images/${fileId}?ids=${nodeIdsParam}&format=png&scale=2`;
+        
+        try {
+          const imageResponse = await fetch(imageApiUrl, {
+            headers: { 'X-Figma-Token': figmaToken }
+          });
+
+          if (!imageResponse.ok) {
+            console.warn(`Failed to fetch batch starting at index ${i}: ${imageResponse.statusText}`);
+            continue;
+          }
+
+          const imageData = await imageResponse.json();
+          
+          for (const [nodeKey, imageUrl] of Object.entries(imageData.images)) {
+            if (imageUrl) {
+              try {
+                const imgRes = await fetch(imageUrl);
+                if (imgRes.ok) {
+                  const arrayBuffer = await imgRes.arrayBuffer();
+                  const originalNodeId = nodeKey.replace(":", "-");
+                  const filename = `${originalNodeId}.png`;
+                  const imagePath = path.join(imagesDownloadDir, filename);
+                  const relativePath = path.join(folderName, filename);
+                  
+                  fs.writeFileSync(imagePath, Buffer.from(arrayBuffer));
+                  downloadedImages.push(filename);
+                  
+                  // Create mapping for HTML replacement
+                  imageMapping[originalNodeId] = {
+                    localPath: imagePath,
+                    relativePath: relativePath,
+                    filename: filename,
+                    nodeId: originalNodeId
+                  };
+                }
+              } catch (error) {
+                console.warn(`Failed to download image ${nodeKey}:`, error.message);
+              }
+            }
+          }
+        } catch (error) {
+          console.warn(`Failed to process batch starting at index ${i}:`, error.message);
+        }
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: `✅ Downloaded ${downloadedImages.length} images to folder: ${imagesDownloadDir}\n\n` +
+                `**Image Mapping for HTML replacement:**\n` +
+                `\`\`\`json\n${JSON.stringify(imageMapping, null, 2)}\n\`\`\`\n\n` +
+                `**Usage in HTML:**\n` +
+                `- Use node IDs as keys to replace image sources\n` +
+                `- Use relativePath for web-friendly paths\n` +
+                `- Use localPath for absolute file system paths\n\n` +
+                `**Downloaded files:** ${downloadedImages.join(', ')}`
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: `❌ Error downloading images: ${error.message}`
+        }]
+      };
+    }
+  }
+);
+
+// Combined Figma Responsive Analysis Tool  
 server.tool("figmaToHtml",
   { 
     desktopUrl: z.string().optional().describe("Desktop Figma URL"),
@@ -185,12 +646,15 @@ server.tool("figmaToHtml",
         { url: params.tabletUrl, name: "tablet" },
         { url: params.mobileUrl, name: "mobile" }
       ];
-
+      
+      let variables = [];
       for (const viewport of viewports) {
         if (viewport.url) {
           try {
             const result = await fetchFigmaDesign(viewport.url);
-            
+            if(variables.length === 0) {
+              variables = await fetchFigmaVariables(viewport.url);
+            }
             // Add images if requested
             if (params.includeImages && result.image) {
               content.push({
@@ -211,9 +675,22 @@ server.tool("figmaToHtml",
               type: "text",
               text: `Error fetching ${viewport.name} design: ${error.message}`
             });
-            console.error(`Error fetching ${viewport.name} design:`, error.message);
+            // console.error(`Error fetching ${viewport.name} design:`, error.message);
           }
         }
+      }
+
+      // Check if we have any valid data to proceed
+      const hasImages = params.includeImages && imageRefs.length > 0;
+      const hasJsonData = params.includeJsonData && Object.keys(designs).length > 0;
+      const hasVariables = variables.length > 0;
+      if (!hasImages && !hasJsonData) {
+        return {
+          content: [{ 
+            type: "text", 
+            text: `Error: No valid design data could be retrieved from any of the provided Figma URLs. Please check the URLs and try again. ${JSON.stringify(designs, null, 2)}`
+          }]
+        };
       }
 
       // Create comprehensive analysis prompt
@@ -225,12 +702,12 @@ server.tool("figmaToHtml",
         ? `## Design Data Analysis\nBelow is the extracted design data from Figma for technical analysis:\n\n\`\`\`json\n${JSON.stringify(designs, null, 2)}\n\`\`\`\n\n`
         : '';
 
-      const prompt = `# Comprehensive Responsive Design Analysis & Implementation
+      const variablesSection = hasVariables 
+        ? `## Variables Data\nBelow are the Figma design variables for consistent styling:\n\n\`\`\`json\n${JSON.stringify(variables, null, 2)}\n\`\`\`\n\n`
+        : '';
 
-${imageSection}## Objective
-Create a production-ready responsive module based on the provided Figma designs across multiple viewports.
-
-## CRITICAL IMPLEMENTATION RULE
+      // Modular Rules Structure
+      const coreRules = `## CRITICAL IMPLEMENTATION RULE
 **Layout Construction Priority:**
 1. **Primary Source**: Build layout structure based on JSON design data AND image design analysis
 2. **Data Integration**: Combine structural information from JSON with visual cues from images
@@ -239,9 +716,9 @@ Create a production-ready responsive module based on the provided Figma designs 
    - **Provide detailed descriptions of BOTH layout versions**
    - **Present clear comparison with pros/cons of each approach**
    - **Wait for user selection before proceeding**
-4. **Consistency Check**: If no conflicts exist, proceed with unified responsive implementation
+4. **Consistency Check**: If no conflicts exist, proceed with unified responsive implementation`;
 
-## Analysis Framework
+      const analysisFramework = `## Analysis Framework
 
 ### Phase 1: Design Data Integration & Conflict Detection
 **Primary Analysis Steps:**
@@ -275,79 +752,9 @@ IF (desktop_layout_approach !== mobile_layout_approach) {
 } ELSE {
   PROCEED_WITH_IMPLEMENTATION();
 }
-\`\`\`
+\`\`\``;
 
-### Phase 2: Visual & Structural Analysis
-**Cross-Viewport Comparison:**
-- Layout structural differences between breakpoints
-- Content hierarchy and priority shifts
-- Navigation pattern evolution (desktop nav → mobile hamburger)
-- Typography scaling and readability optimization
-- Spacing system consistency and adaptations
-
-**Component Behavior Mapping:**
-- Interactive element transformations
-- Content reflow and reorganization patterns
-- Image and media handling across devices
-- Form factor specific optimizations
-
-### Phase 3: Responsive Strategy Development
-**Mobile-First Architecture:**
-- Base mobile styles as foundation
-- Progressive enhancement for larger screens
-- Breakpoint selection based on content, not devices
-- Performance-first loading strategy
-
-**Interaction Design:**
-- Touch vs hover interaction patterns
-- Progressive disclosure for complex interfaces
-- Accessibility considerations across input methods
-- Gesture support and fallback strategies
-
-### Phase 4: Technical Implementation
-**Code Architecture:**
-- Semantic HTML5 structure with proper landmarks
-- CSS custom properties for design tokens
-- Modular CSS architecture (BEM, CSS Modules, or similar)
-- JavaScript progressive enhancement strategy
-
-**Performance Optimization:**
-- Critical CSS inlining strategy
-- Image optimization and responsive images
-- Font loading optimization
-- Bundle splitting for viewport-specific code
-
-### Phase 5: Quality Assurance Framework
-**Testing Strategy:**
-- Cross-device testing matrix
-- Performance benchmarking (Core Web Vitals)
-- Accessibility audit checklist (WCAG 2.1 AA)
-- Browser compatibility verification
-
-**Monitoring & Maintenance:**
-- Performance monitoring setup
-- User experience analytics
-- A/B testing framework for responsive variants
-- Documentation for future maintenance
-
-## Expected Deliverable
-A self-contained, production-ready responsive module including:
-
-1. **Complete HTML Structure** - Semantic, accessible markup based on JSON + image analysis
-2. **Comprehensive CSS System** - Mobile-first, maintainable styles
-3. **Progressive JavaScript** - Enhancement without dependency
-4. **Performance Optimizations** - Fast loading across all devices
-5. **Documentation Package** - Implementation and maintenance guides
-
-## HTML REFACTORING RULES (Apply when HTML refactoring is requested)
-
-### Background Images for CMS Integration
-- **IMPORTANT:** When using images that need to be CMS-controllable, use HTML elements instead of CSS background images:
-\`\`\`html
-<div class="module-name__bg-overlay z-1 relative">
-  <img src="{{imagesBase64}}" data-src="{{myModule.backgroundImage}}" alt="" class="absolute inset-0 w-full h-full object-cover opacity-50 mix-blend-soft-light -z-1 lazy">
-</div>
-\`\`\`
+      const htmlRules = `## HTML REFACTORING RULES
 
 ### Module Structure Standards
 \`\`\`html
@@ -365,16 +772,15 @@ A self-contained, production-ready responsive module including:
 - Do not add 'space-y-*' classes for elements inside content wrappers
 - Do not add classes for tag a inside content wrapper
 - Do not style margin or padding for tags content: p, a, etc.
-- Check padding or margin of content with JSON from Figma
 
 ### Container Usage
 \`\`\`html
 <div class="container">
     <!-- Content -->
 </div>
-\`\`\`
+\`\`\``;
 
-### CSS and Styling Standards
+      const cssRules = `## CSS and Styling Standards
 - Follow BEM methodology
 - Use Tailwind apply for style, do not add class
 - Maximum 3 words per class
@@ -383,35 +789,11 @@ A self-contained, production-ready responsive module including:
 - Reference variables from @_variables.scss and @repomix-output.txt
 - Use configured color classes, not default Tailwind colors
 
-### Spacing Values (EXTREMELY IMPORTANT)
-- All spacing values MUST be taken from Space.js configuration
-- For pixel values in Figma, use corresponding Space.js value where number is HALF of pixel value:
-  - 24px padding → \`p-12\` (since 12 * 2 = 24px)
-  - 48px padding → \`p-24\` (since 24 * 2 = 48px)
-  - 80px padding → \`p-40\` (since 40 * 2 = 80px)
-- For custom values not in standard scale: \`px-[107px]\`
-- **YOU WILL BE FIRED** if spacing values don't match Space.js configuration
-
-### Precise Spacing Guidelines
-1. **Calculate from Figma JSON coordinates**
-   - Horizontal spacing: compare \`x\` coordinates between elements
-   - Vertical spacing: compare \`y\` coordinates between elements
-   - Account for parent element position in nested elements
-
-2. **Convert pixel values to Tailwind classes**
-   - Divide Figma pixel value by 2 for Tailwind value
-   - 16px → p-8, 24px → p-12, 32px → p-16
-   - Non-standard values: p-[15px], p-[37px]
-
-3. **Container spacing standards**
-   - Desktop: 40px padding (p-20)
-   - Mobile: 16px padding (p-8)
-
-4. **Responsive Design Rules**
-   - Mobile-first approach
-   - Default classes for mobile view
-   - Breakpoint prefixes: md: ≥768px, lg: ≥1024px, xl: ≥1280px
-   - **IMPORTANT:** "large" properties → xl breakpoint, "small" properties → default (mobile)
+### Responsive Design Rules
+- Mobile-first approach
+- Default classes for mobile view
+- Breakpoint prefixes: md: ≥768px, lg: ≥1024px, xl: ≥1280px
+- **IMPORTANT:** "large" properties → xl breakpoint, "small" properties → default (mobile)
 
 ### Width/Layout Best Practices
 - Prefer fluid widths (w-5/12) over fixed widths (w-[625px])
@@ -421,9 +803,17 @@ A self-contained, production-ready responsive module including:
 ### Styling Rules
 - NO space-y-* classes for elements inside content wrappers
 - NO styling margin/padding directly on content tags (h1-h6, p, a)
-- Use wrapper divs with mt-* or mb-* classes instead
+- Use wrapper divs with mt-* or mb-* classes instead`;
 
-### Image Handling Standards
+      const spacingRules = `## Precise Spacing Guidelines
+- Calculate from Figma JSON coordinates
+- Horizontal spacing: compare \`x\` coordinates between elements
+- Vertical spacing: compare \`y\` coordinates between elements
+- Account for parent element position in nested elements
+
+**CRITICAL REMINDER:** Spacing accuracy is EXTREMELY IMPORTANT. Follow Figma JSON coordinates precisely or you will be fired. Perfect pixel delivery = $2000 USD reward.`;
+
+      const imageRules = `## Image Handling Standards
 **Standard Images:**
 \`\`\`html
 <div class="aspect-[16/9]">
@@ -434,7 +824,14 @@ A self-contained, production-ready responsive module including:
 </div>
 \`\`\`
 
-**Background Images:**
+**Background Images for CMS Integration:**
+\`\`\`html
+<div class="module-name__bg-overlay z-1 relative">
+  <img src="{{imagesBase64}}" data-src="{{myModule.backgroundImage}}" alt="" class="absolute inset-0 w-full h-full object-cover opacity-50 mix-blend-soft-light -z-1 lazy">
+</div>
+\`\`\`
+
+**Full Background Images:**
 \`\`\`html
 <section class="module mod-full-width-long-image relative z-1">
     <div class="absolute inset-0 -z-1">
@@ -452,20 +849,16 @@ A self-contained, production-ready responsive module including:
       </picture>
     </div>
 </section>
-\`\`\`
+\`\`\``;
 
-### Interactive Elements
+      const interactionRules = `## Interactive Elements & Animation
 - Buttons with background: \`no-underline btn btn-primary\`
 - Buttons without background: \`no-underline btn-text text-link-primary\`
-
-### Animation Standards
 - Always use: \`anima-bottom\`
 - Sequential delays: \`delay-1\`, \`delay-2\`, etc.
-- Dynamic delays with Handlebars: \`delay-{{ @index }}\`
+- Dynamic delays with Handlebars: \`delay-{{ @index }}\``;
 
-**CRITICAL REMINDER:** Spacing accuracy is EXTREMELY IMPORTANT. Follow Figma JSON coordinates precisely or you will be fired. Perfect pixel delivery = $2000 USD reward.
-
-${jsonSection}## Implementation Instructions
+      const implementationInstructions = `## Implementation Instructions
 **MANDATORY FIRST STEP**: Check for layout conflicts between viewports
 1. Analyze the design data structure and extract key design tokens
 2. Cross-reference JSON structure with visual design patterns
@@ -474,9 +867,9 @@ ${jsonSection}## Implementation Instructions
 5. Create comprehensive implementation strategy with specific code recommendations
 6. Include performance and accessibility considerations throughout
 
-**Focus:** Create maintainable, scalable code that can be easily integrated into existing projects while maintaining design fidelity across all target devices.
+**Focus:** Create maintainable, scalable code that can be easily integrated into existing projects while maintaining design fidelity across all target devices.`;
 
-## Development Priorities
+      const developmentPriorities = `## Development Priorities
 - **Data-Driven Layout** - Build structure based on JSON + image analysis
 - **Conflict Resolution First** - Address layout contradictions before coding
 - **Mobile-First Approach** - Start with mobile base styles
@@ -484,6 +877,81 @@ ${jsonSection}## Implementation Instructions
 - **Performance Budget** - Optimize for fast loading
 - **Accessibility First** - WCAG 2.1 AA compliance
 - **Modern Standards** - Use latest web technologies appropriately`;
+
+      // Determine which rules to include based on context
+      const multipleViewports = Object.keys(designs).length >= 2;
+      const hasComplexLayout = hasImages && hasJsonData;
+      
+      // Build modular prompt based on context
+      let selectedRules = [coreRules];
+      
+      if (multipleViewports) {
+        selectedRules.push(analysisFramework);
+      }
+      
+      selectedRules.push(htmlRules, cssRules);
+      
+      if (hasJsonData) {
+        selectedRules.push(spacingRules);
+      }
+      
+      if (hasImages) {
+        selectedRules.push(imageRules);
+      }
+      
+      selectedRules.push(interactionRules, implementationInstructions, developmentPriorities);
+
+      // Check if there's design data available for image analysis
+      const hasDesignData = Object.keys(designs).length > 0;
+
+      const imageDownloadSection = hasDesignData 
+        ? `\n\n## 📸 Image Analysis & Download Strategy\n` +
+          `**TASK:** Analyze the provided JSON design data to identify all nodes that contain or can be exported as images.\n\n` +
+          `**What to look for in the JSON:**\n` +
+          `- Nodes with \`fills\` array containing \`type: "IMAGE"\`\n` +
+          `- Nodes of type: FRAME, COMPONENT, INSTANCE that may contain visual content\n` +
+          `- Nodes of type: RECTANGLE, ELLIPSE, IMAGE with visual elements\n` +
+          `- Any node that represents a visual element in the design\n\n` +
+          `**After completing the HTML/CSS analysis, I should:**\n` +
+          `1. **Identify image nodes** from the JSON data analysis\n` +
+          `2. **Ask if you want to download these images**\n` +
+          `3. **If yes, use the downloadFigmaImages tool with the identified nodeIds:**\n` +
+          `   - Pass the node IDs I found from JSON analysis to \`nodeIds\` parameter\n` +
+          `   - This avoids redundant API calls since I already have the data\n` +
+          `   - Example: \`nodeIds: ["123-456", "789-012", "345-678"]\`\n` +
+          `4. **IMPORTANT: Rename each downloaded image** to meaningful, SEO-friendly names\n\n` +
+          `**Image Renaming Strategy:**\n` +
+          `- Analyze the node's context, name, and purpose in the design\n` +
+          `- Create descriptive filenames based on content/function\n` +
+          `- Use kebab-case format (lowercase with hyphens)\n` +
+          `- Include relevant keywords for SEO\n\n` +
+          `**Example renaming logic:**\n` +
+          `- Hero section background → \`hero-background.png\`\n` +
+          `- Product showcase image → \`product-showcase.png\`\n` +
+          `- Company logo → \`company-logo.png\`\n` +
+          `- Team member photo → \`team-member-john.png\`\n` +
+          `- Call-to-action button → \`cta-button.png\`\n\n` +
+          `**After downloading, I will:**\n` +
+          `- Provide mapping between original node IDs and new filenames\n` +
+          `- Update HTML with renamed image paths\n` +
+          `- Add appropriate alt text for accessibility\n` +
+          `- Ensure proper image loading optimization\n\n`
+        : '';
+
+      const prompt = `# Comprehensive Responsive Design Analysis & Implementation
+
+${imageSection}## Objective
+Create a production-ready responsive module based on the provided Figma designs across multiple viewports.
+
+${selectedRules.join('\n\n')}
+
+${jsonSection}${variablesSection}${imageDownloadSection}**Expected Deliverable:**
+A self-contained, production-ready responsive module including:
+1. **Complete HTML Structure** - Semantic, accessible markup
+2. **Comprehensive CSS System** - Mobile-first, maintainable styles
+3. **Progressive JavaScript** - Enhancement without dependency
+4. **Performance Optimizations** - Fast loading across all devices
+5. **Documentation Package** - Implementation and maintenance guides`;
 
       content.push({
         type: "text",
@@ -507,4 +975,3 @@ ${jsonSection}## Implementation Instructions
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 await server.connect(transport);
-// await fetchFigmaDesign("https://www.figma.com/design/dYYTLSIATnassRFckYWbpN/NPKI-Website?node-id=4362-10168&t=CKE6uIFszEQngzLt-4"); 
