@@ -22,6 +22,29 @@ if (!fs.existsSync(downloadDir)) {
 // Read Figma token from environment variable
 const figmaToken = process.env.FIGMA_API_KEY || "";
 
+// Helper function to handle Figma API errors
+function handleFigmaError(response, context = "") {
+  const status = response.status;
+  const statusText = response.statusText;
+  
+  switch (status) {
+    case 401:
+      return `🔑 Figma Token Error: Your Figma API token has expired or is invalid. Please update your FIGMA_API_KEY environment variable with a new token from Figma Settings > Personal Access Tokens.`;
+    case 403:
+      return `🚫 Access Denied: You don't have permission to access this Figma file. Please check if the file is public or if your token has the correct permissions.`;
+    case 404:
+      return `📁 File Not Found: The Figma file or node ID doesn't exist. Please verify the URL and ensure the file hasn't been deleted or moved.`;
+    case 429:
+      return `⏰ Rate Limit Exceeded: Too many requests to Figma API. Please wait a few minutes before trying again.`;
+    case 500:
+    case 502:
+    case 503:
+      return `🔧 Figma Server Error: Figma's servers are experiencing issues (${status}). Please try again later.`;
+    default:
+      return `❌ Figma API Error (${status}): ${statusText}${context ? ` - ${context}` : ''}`;
+  }
+}
+
 // Create an MCP server
 const server = new McpServer({
   name: "Gravity Global Figma",
@@ -88,7 +111,7 @@ export async function fetchFigmaDesign(
   });
 
   if (!response.ok) {
-    throw new Error(`Figma API error: ${response.statusText}`);
+    throw new Error(handleFigmaError(response, "fetching design data"));
   }
 
   const data = await response.json();
@@ -109,9 +132,7 @@ export async function fetchFigmaDesign(
   });
 
   if (!imageResponse.ok) {
-    throw new Error(
-      `Figma API error when fetching image: ${imageResponse.statusText}`
-    );
+    throw new Error(handleFigmaError(imageResponse, "fetching image URLs"));
   }
 
   const imageData = await imageResponse.json();
@@ -222,7 +243,7 @@ This ensures only real images are downloaded, not design elements or placeholder
           content: [
             {
               type: "text",
-              text: "Error: Figma token not found. Please set the FIGMA_API_KEY environment variable.",
+              text: "🔑 Configuration Error: Figma API token not found. Please set the FIGMA_API_KEY environment variable with your Figma Personal Access Token from Figma Settings > Personal Access Tokens.",
             },
           ],
         };
@@ -258,15 +279,13 @@ This ensures only real images are downloaded, not design elements or placeholder
         fs.mkdirSync(imagesDownloadDir, { recursive: true });
       }
 
-      console.log(
-        `Using provided node IDs (${targetNodeIds.length} nodes):`,
-        targetNodeIds
-      );
+
 
       // Download images in batches
       const downloadedImages = [];
       const imageMapping = {};
       const batchSize = 5;
+      const errors = [];
 
       for (let i = 0; i < targetNodeIds.length; i += batchSize) {
         const batch = targetNodeIds.slice(i, i + batchSize);
@@ -275,20 +294,27 @@ This ensures only real images are downloaded, not design elements or placeholder
         const imageApiUrl = `https://api.figma.com/v1/images/${fileId}?ids=${nodeIdsParam}&format=png&scale=2`;
 
         try {
+          
           const imageResponse = await fetch(imageApiUrl, {
             headers: { "X-Figma-Token": figmaToken },
           });
 
           if (!imageResponse.ok) {
-            console.warn(
-              `Failed to fetch batch starting at index ${i}: ${imageResponse.statusText}`
-            );
+            const errorMsg = handleFigmaError(imageResponse, `batch ${Math.floor(i/batchSize) + 1}`);
+            errors.push(`Batch ${Math.floor(i/batchSize) + 1}: ${errorMsg}`);
             continue;
           }
 
           const imageData = await imageResponse.json();
 
-          for (const [nodeKey, imageUrl] of Object.entries(imageData.images)) {
+          // Check if API returned error in response body
+          if (imageData.error) {
+            const errorMsg = `Batch ${Math.floor(i/batchSize) + 1}: ${imageData.error}`;
+            errors.push(errorMsg);
+            continue;
+          }
+
+          for (const [nodeKey, imageUrl] of Object.entries(imageData.images || {})) {
             if (imageUrl) {
               try {
                 const imgRes = await fetch(imageUrl);
@@ -309,30 +335,57 @@ This ensures only real images are downloaded, not design elements or placeholder
                     filename: filename,
                     nodeId: originalNodeId,
                   };
+                } else {
+                  errors.push(`Failed to download image for node ${nodeKey.replace(":", "-")}: HTTP ${imgRes.status}`);
                 }
-              } catch (error) {}
+              } catch (error) {
+                errors.push(`Failed to process image for node ${nodeKey.replace(":", "-")}: ${error.message}`);
+              }
+            } else {
+              errors.push(`No image URL returned for node ${nodeKey.replace(":", "-")} - may not contain actual image content`);
             }
           }
-        } catch (error) {}
+        } catch (error) {
+          const errorMsg = `Batch ${Math.floor(i/batchSize) + 1} failed: ${error.message}`;
+          errors.push(errorMsg);
+        }
+      }
+
+      // Prepare result message
+      let resultMessage = "";
+      
+      if (downloadedImages.length > 0) {
+        resultMessage += `✅ Successfully downloaded ${downloadedImages.length} images to folder: ${imagesDownloadDir}\n\n`;
+        
+        resultMessage += `**Image Mapping for HTML replacement:**\n`;
+        resultMessage += `\`\`\`json\n${JSON.stringify(imageMapping, null, 2)}\n\`\`\`\n\n`;
+        
+        resultMessage += `**Usage in HTML:**\n`;
+        resultMessage += `- Use node IDs as keys to replace image sources\n`;
+        resultMessage += `- Use relativePath for web-friendly paths\n`;
+        resultMessage += `- Use localPath for absolute file system paths\n\n`;
+        
+        resultMessage += `**Downloaded files:** ${downloadedImages.join(", ")}\n\n`;
+      } else {
+        resultMessage += `⚠️ No images were successfully downloaded.\n\n`;
+      }
+
+      if (errors.length > 0) {
+        resultMessage += `**Errors encountered (${errors.length}):**\n`;
+        errors.forEach((error, index) => {
+          resultMessage += `${index + 1}. ${error}\n`;
+        });
+        resultMessage += `\n**Troubleshooting Tips:**\n`;
+        resultMessage += `- Verify that the provided node IDs actually contain images with imageRef properties\n`;
+        resultMessage += `- Check if your Figma token has sufficient permissions\n`;
+        resultMessage += `- Ensure the Figma file is accessible and not private\n`;
       }
 
       return {
         content: [
           {
             type: "text",
-            text:
-              `✅ Downloaded ${downloadedImages.length} images to folder: ${imagesDownloadDir}\n\n` +
-              `**Image Mapping for HTML replacement:**\n` +
-              `\`\`\`json\n${JSON.stringify(
-                imageMapping,
-                null,
-                2
-              )}\n\`\`\`\n\n` +
-              `**Usage in HTML:**\n` +
-              `- Use node IDs as keys to replace image sources\n` +
-              `- Use relativePath for web-friendly paths\n` +
-              `- Use localPath for absolute file system paths\n\n` +
-              `**Downloaded files:** ${downloadedImages.join(", ")}`,
+            text: resultMessage,
           },
         ],
       };
@@ -372,7 +425,7 @@ server.tool(
           content: [
             {
               type: "text",
-              text: "Error: Figma token not found. Please set the FIGMA_API_KEY environment variable.",
+              text: "🔑 Configuration Error: Figma API token not found. Please set the FIGMA_API_KEY environment variable with your Figma Personal Access Token from Figma Settings > Personal Access Tokens.",
             },
           ],
         };
@@ -381,6 +434,7 @@ server.tool(
       const content = [];
       const imageRefs = [];
       const designs = {};
+      const errors = [];
 
       // Fetch design data for each viewport
       const viewports = [
@@ -388,6 +442,19 @@ server.tool(
         { url: params.tabletUrl, name: "tablet" },
         { url: params.mobileUrl, name: "mobile" },
       ];
+
+      // Check if at least one URL is provided
+      const validViewports = viewports.filter(v => v.url);
+      if (validViewports.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "⚠️ No Figma URLs provided. Please provide at least one URL (desktop, tablet, or mobile).",
+            },
+          ],
+        };
+      }
 
       for (const viewport of viewports) {
         if (viewport.url) {
@@ -409,14 +476,14 @@ server.tool(
               designs[viewport.name] = result.design;
             }
           } catch (error) {
+            const errorMsg = `❌ Error fetching ${viewport.name} design: ${error.message}`;
+            errors.push(errorMsg);
+            
+            // Add error to content for user visibility
             content.push({
               type: "text",
-              text: `Error fetching ${viewport.name} design: ${error.message}`,
+              text: errorMsg,
             });
-            console.error(
-              `Error fetching ${viewport.name} design:`,
-              error.message
-            );
           }
         }
       }
@@ -438,9 +505,15 @@ server.tool(
             )}\n\`\`\`\n\n`
           : "";
 
+      // Add status summary
+      const successCount = validViewports.length - errors.length;
+      const statusSection = errors.length > 0 
+        ? `## ⚠️ Fetch Status Summary\n- ✅ Successfully fetched: ${successCount}/${validViewports.length} viewports\n- ❌ Failed: ${errors.length}/${validViewports.length} viewports\n\n**Note:** Analysis will proceed with available data. Some features may be limited due to missing viewport data.\n\n`
+        : `## ✅ Fetch Status Summary\nSuccessfully fetched all ${successCount} viewport(s). Ready for comprehensive analysis.\n\n`;
+
       const prompt = `# Comprehensive Responsive Design Analysis & Implementation
 
-${imageSection}## Objective
+${statusSection}${imageSection}## Objective
 Create a production-ready responsive module based on the provided Figma designs across multiple viewports.
 
 ## CRITICAL IMPLEMENTATION RULE
@@ -685,11 +758,28 @@ ${jsonSection}## Implementation Instructions
 
       return { content };
     } catch (error) {
+      // Check if it's a specific Figma API error
+      let errorMessage = "❌ Error in Figma responsive analysis: ";
+      
+      if (error.message.includes("🔑 Figma Token Error")) {
+        errorMessage += "Token expired or invalid. Please update your FIGMA_API_KEY.";
+      } else if (error.message.includes("🚫 Access Denied")) {
+        errorMessage += "Access denied to Figma file. Check permissions.";
+      } else if (error.message.includes("📁 File Not Found")) {
+        errorMessage += "Figma file or node not found. Verify the URL.";
+      } else if (error.message.includes("⏰ Rate Limit")) {
+        errorMessage += "Rate limit exceeded. Please wait before retrying.";
+      } else if (error.message.includes("🔧 Figma Server Error")) {
+        errorMessage += "Figma server error. Please try again later.";
+      } else {
+        errorMessage += error.message;
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `Error in Figma responsive analysis: ${error.message}`,
+            text: errorMessage,
           },
         ],
       };
